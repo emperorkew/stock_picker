@@ -1,7 +1,8 @@
+import numpy as np
 import pandas as pd
 import pytest
 
-from stock_picker.analysis import calculate_indicators, generate_signals
+from stock_picker.analysis import calculate_indicators, generate_signals, score_signals
 
 
 def test_calculate_indicators_empty():
@@ -73,3 +74,39 @@ def test_generate_signals_sell():
 
     signal = generate_signals(hist, info)
     assert signal == 'Sell'
+
+
+def test_rsi_extremes():
+    rising = pd.DataFrame({'Close': np.linspace(100, 300, 250), 'Volume': [1e6] * 250})
+    assert calculate_indicators(rising)['RSI'].iloc[-1] > 99
+
+    falling = pd.DataFrame({'Close': np.linspace(300, 100, 250), 'Volume': [1e6] * 250})
+    assert calculate_indicators(falling)['RSI'].iloc[-1] < 1
+
+
+def test_indicators_flat_price():
+    flat = pd.DataFrame({'Close': [100.0] * 250, 'Volume': [1e6] * 250})
+    res = calculate_indicators(flat)
+    assert res['EMA_50'].iloc[-1] == pytest.approx(100)
+    assert res['EMA_200'].iloc[-1] == pytest.approx(100)
+    assert res['MACD'].iloc[-1] == pytest.approx(0)
+    assert res['Volume_Anomaly'].iloc[-1] == pytest.approx(1)
+
+
+def test_negative_pe_is_not_cheap():
+    latest = pd.Series({'RSI': 50.0})
+    buy, sell = score_signals(latest, {'trailingPE': -10})
+    assert buy == 0
+
+    buy_cheap, _ = score_signals(latest, {'trailingPE': 10})
+    assert buy_cheap == 1
+
+
+def test_nan_indicators_score_nothing():
+    latest = pd.Series({
+        'EMA_50': float('nan'), 'EMA_200': float('nan'), 'RSI': float('nan'),
+        'MACD': float('nan'), 'Signal_Line': float('nan'), 'Volume_Anomaly': float('nan'),
+    })
+    buy, sell = score_signals(latest, {'trailingPE': 25})
+    assert buy == 0
+    assert sell == 0

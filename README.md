@@ -5,16 +5,23 @@ Fetch market data, screen stocks, and plot the results.
 ## Project layout
 
 ```
-main.py                 Entry point: load data -> pick stocks -> plot
+main.py                 Entry point: fetch -> analyze -> log to Supabase -> dashboard
 stock_picker/           The application package
+    config.py           Tunables: universe, thresholds, trade sizing, schedule
     db.py               Supabase client setup (+ connection check)
-    data.py             Loading/storing stock data
-    analysis.py         Screening and stock-picking logic
+    data.py             S&P 500 universe, batched price downloads, cached fundamentals
+    analysis.py         Indicators (EMA/RSI/MACD/volume) and signal scoring
+    ledger.py           Supabase-backed ledger: signals, snapshots, simulated trades
     plotting.py         Matplotlib charts
 tests/                  Pytest tests
 notebooks/              Jupyter notebooks for exploration
-data/                   Local data files (not committed)
+data/                   Local caches (not committed)
+supabase/migrations/    Database schema + pg_cron data-retention jobs
 ```
+
+Old data is purged automatically by `pg_cron` jobs in the database:
+market snapshots after 2 years, trading signals after 1 year. The trade
+ledger is kept forever.
 
 ## Setup
 

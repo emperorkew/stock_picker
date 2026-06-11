@@ -1,9 +1,10 @@
 """Screening and stock-picking logic."""
 
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
 
-import numpy as np
 import pandas as pd
+
+from stock_picker import config
 
 
 def calculate_indicators(hist: pd.DataFrame) -> pd.DataFrame:
@@ -17,17 +18,12 @@ def calculate_indicators(hist: pd.DataFrame) -> pd.DataFrame:
     df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
     df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
 
-    # RSI (14-day)
+    # RSI (14-day, Wilder's smoothing throughout)
     delta = df['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    gain = delta.where(delta > 0, 0.0).ewm(alpha=1 / 14, adjust=False).mean()
+    loss = (-delta.where(delta < 0, 0.0)).ewm(alpha=1 / 14, adjust=False).mean()
     rs = gain / loss
     df['RSI'] = 100 - (100 / (1 + rs))
-    # Fill initial NaN RSI values using an exponential moving average approach
-    gain_ema = (delta.where(delta > 0, 0)).ewm(alpha=1/14, adjust=False).mean()
-    loss_ema = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False).mean()
-    rs_ema = gain_ema / loss_ema
-    df['RSI'] = df['RSI'].fillna(100 - (100 / (1 + rs_ema)))
 
     # MACD
     exp1 = df['Close'].ewm(span=12, adjust=False).mean()
@@ -35,11 +31,71 @@ def calculate_indicators(hist: pd.DataFrame) -> pd.DataFrame:
     df['MACD'] = exp1 - exp2
     df['Signal_Line'] = df['MACD'].ewm(span=9, adjust=False).mean()
 
-    # Volume Anomaly
-    df['Volume_20SMA'] = df['Volume'].rolling(window=20).mean()
+    # Volume vs the average of the 20 *prior* bars, so a partially traded
+    # current bar doesn't drag down its own baseline.
+    df['Volume_20SMA'] = df['Volume'].rolling(window=20).mean().shift(1)
     df['Volume_Anomaly'] = df['Volume'] / df['Volume_20SMA']
 
     return df
+
+
+def _value(latest: pd.Series, key: str, default: float) -> float:
+    """Like Series.get, but treats NaN as missing too."""
+    value = latest.get(key, default)
+    return default if pd.isna(value) else float(value)
+
+
+def score_signals(latest: pd.Series, info: Dict[str, Any]) -> Tuple[float, float]:
+    """Score the latest indicator row plus fundamentals; returns (buy_score, sell_score)."""
+    ema_50 = _value(latest, 'EMA_50', 0)
+    ema_200 = _value(latest, 'EMA_200', 0)
+    rsi = _value(latest, 'RSI', 50)
+    macd = _value(latest, 'MACD', 0)
+    signal_line = _value(latest, 'Signal_Line', 0)
+    volume_anomaly = _value(latest, 'Volume_Anomaly', 1)
+
+    # Fundamentals
+    pe_ratio = info.get('forwardPE') or info.get('trailingPE') or 50  # Default to high if missing
+    fcf = info.get('freeCashflow')
+    market_cap = info.get('marketCap')
+    fcf_yield = (fcf / market_cap) if fcf and market_cap else 0
+
+    buy_score = 0.0
+    sell_score = 0.0
+
+    # Technical Rules
+    if ema_50 > ema_200:
+        buy_score += 1
+    elif ema_50 < ema_200:
+        sell_score += 1
+
+    if rsi < config.RSI_OVERSOLD:
+        buy_score += 1  # Oversold
+    elif rsi > config.RSI_OVERBOUGHT:
+        sell_score += 1  # Overbought
+
+    if macd > signal_line:
+        buy_score += 1
+    elif macd < signal_line:
+        sell_score += 1
+
+    if volume_anomaly > config.VOLUME_SPIKE:
+        buy_score += 0.5  # High volume interest
+    elif volume_anomaly < config.VOLUME_DRY:
+        sell_score += 0.5  # Drying up
+
+    # Fundamental Rules. Negative P/E means negative earnings, not "cheap".
+    if 0 < pe_ratio < config.PE_CHEAP:
+        buy_score += 1
+    elif pe_ratio > config.PE_EXPENSIVE:
+        sell_score += 1
+
+    if fcf_yield > config.FCF_YIELD_GOOD:
+        buy_score += 1
+    elif fcf_yield < 0:
+        sell_score += 1
+
+    return buy_score, sell_score
 
 
 def generate_signals(hist: pd.DataFrame, info: Dict[str, Any]) -> str:
@@ -50,60 +106,12 @@ def generate_signals(hist: pd.DataFrame, info: Dict[str, Any]) -> str:
     if hist.empty or len(hist) < 200:
         return 'Hold'
 
-    # Get latest technicals
     latest = hist.iloc[-1]
+    buy_score, sell_score = score_signals(latest, info)
 
-    ema_50 = latest.get('EMA_50', 0)
-    ema_200 = latest.get('EMA_200', 0)
-    rsi = latest.get('RSI', 50)
-    macd = latest.get('MACD', 0)
-    signal_line = latest.get('Signal_Line', 0)
-    volume_anomaly = latest.get('Volume_Anomaly', 1)
-
-    # Fundamentals
-    pe_ratio = info.get('forwardPE') or info.get('trailingPE') or 50 # Default to high if missing
-    fcf = info.get('freeCashflow')
-    market_cap = info.get('marketCap')
-    fcf_yield = (fcf / market_cap) if fcf and market_cap else 0
-
-    buy_score = 0
-    sell_score = 0
-
-    # Technical Rules
-    if ema_50 > ema_200:
-        buy_score += 1
-    elif ema_50 < ema_200:
-        sell_score += 1
-
-    if rsi < 30:
-        buy_score += 1 # Oversold
-    elif rsi > 70:
-        sell_score += 1 # Overbought
-
-    if macd > signal_line:
-        buy_score += 1
-    elif macd < signal_line:
-        sell_score += 1
-
-    if volume_anomaly > 1.5:
-        buy_score += 0.5 # High volume interest
-    elif volume_anomaly < 0.5:
-        sell_score += 0.5 # Drying up
-
-    # Fundamental Rules
-    if pe_ratio < 20:
-        buy_score += 1
-    elif pe_ratio > 40:
-        sell_score += 1
-
-    if fcf_yield > 0.05:
-        buy_score += 1
-    elif fcf_yield < 0:
-        sell_score += 1
-
-    if buy_score >= 4 and buy_score > sell_score + 1:
+    if buy_score >= config.BUY_SCORE_THRESHOLD and buy_score > sell_score + 1:
         return 'Buy'
-    elif sell_score >= 4 and sell_score > buy_score + 1:
+    elif sell_score >= config.SELL_SCORE_THRESHOLD and sell_score > buy_score + 1:
         return 'Sell'
     else:
         return 'Hold'
@@ -132,12 +140,16 @@ def pick_stocks(universe_data: Dict[str, Any]) -> pd.DataFrame:
 
         records.append({
             'Ticker': ticker,
+            'Name': info.get('longName') or info.get('shortName'),
             'Signal': signal,
             'Price': latest.get('Close'),
+            'Volume': latest.get('Volume'),
+            'Volume_20SMA': latest.get('Volume_20SMA'),
             'EMA_50': latest.get('EMA_50'),
             'EMA_200': latest.get('EMA_200'),
             'RSI': latest.get('RSI'),
             'MACD': latest.get('MACD'),
+            'Signal_Line': latest.get('Signal_Line'),
             'P/E': pe_ratio,
             'FCF_Yield': fcf_yield
         })
