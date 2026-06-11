@@ -1,6 +1,7 @@
 """Entry point for the stock picker."""
 
 import argparse
+import json
 import logging
 import sys
 import time
@@ -207,6 +208,28 @@ def job():
     logger.info("Job completed.")
 
 
+def _model_age_days():
+    """Days since the model was trained, or None if there is no model/metadata."""
+    meta_path = Path(config.MODEL_META_PATH)
+    if not Path(config.MODEL_PATH).exists() or not meta_path.exists():
+        return None
+    try:
+        trained_at = datetime.fromisoformat(json.loads(meta_path.read_text())['trained_at'])
+    except (OSError, KeyError, ValueError, json.JSONDecodeError):
+        return None
+    return (datetime.now(timezone.utc) - trained_at).days
+
+
+def retrain_job():
+    """Retrain the model; the next daily job picks the new file up from disk."""
+    from stock_picker import model as ml  # lazy: lightgbm import is slow
+
+    logger.info("Starting model retrain...")
+    _, summary = ml.retrain()
+    logger.info(f"Retrain complete (mean walk-forward IC {summary['mean_ic']:+.4f}); "
+                "the next daily job will use the new model.")
+
+
 def _run_job_safely():
     """One failed run must not kill the scheduler loop."""
     try:
@@ -215,13 +238,27 @@ def _run_job_safely():
         logger.exception("Job failed; will retry at the next scheduled run")
 
 
+def _run_retrain_safely():
+    try:
+        retrain_job()
+    except Exception:
+        logger.exception("Model retrain failed; keeping the previous model")
+
+
 def run_scheduler(interval_hours=config.DEFAULT_INTERVAL_HOURS):
-    """Run the job on a schedule."""
-    # Run once immediately
+    """Run the daily job on a schedule, retraining the model monthly."""
+    # Retrain first if the model is missing or stale, then run once immediately.
+    age = _model_age_days()
+    if age is None or age >= config.RETRAIN_INTERVAL_DAYS:
+        logger.info("Model missing or stale "
+                    f"({'no model' if age is None else f'{age} days old'}) — retraining first...")
+        _run_retrain_safely()
     _run_job_safely()
 
-    logger.info(f"Scheduling job to run every {interval_hours} hours...")
+    logger.info(f"Scheduling job every {interval_hours} hours and a model retrain "
+                f"every {config.RETRAIN_INTERVAL_DAYS} days...")
     schedule.every(interval_hours).hours.do(_run_job_safely)
+    schedule.every(config.RETRAIN_INTERVAL_DAYS).days.do(_run_retrain_safely)
 
     while True:
         schedule.run_pending()
@@ -231,12 +268,16 @@ def run_scheduler(interval_hours=config.DEFAULT_INTERVAL_HOURS):
 def main() -> None:
     parser = argparse.ArgumentParser(description="Automated Stock Picker Engine")
     parser.add_argument("--run-once", action="store_true", help="Run the job once and exit")
+    parser.add_argument("--retrain", action="store_true",
+                        help="Retrain the model once and exit")
     parser.add_argument("--interval", type=int, default=config.DEFAULT_INTERVAL_HOURS,
                         help="Interval in hours for scheduled runs")
 
     args = parser.parse_args()
 
-    if args.run_once:
+    if args.retrain:
+        retrain_job()
+    elif args.run_once:
         job()
     else:
         run_scheduler(interval_hours=args.interval)

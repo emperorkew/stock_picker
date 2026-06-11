@@ -227,8 +227,12 @@ def train_final(panel: pd.DataFrame, params: Optional[dict] = None,
 def save_model(booster: lgb.Booster, summary: Dict[str, Any],
                model_path: str = config.MODEL_PATH,
                meta_path: str = config.MODEL_META_PATH) -> None:
-    Path(model_path).parent.mkdir(parents=True, exist_ok=True)
-    booster.save_model(model_path)
+    path = Path(model_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Write-then-rename so a retrain can never leave a half-written model.
+    tmp_path = path.with_suffix(path.suffix + '.tmp')
+    booster.save_model(str(tmp_path))
+    tmp_path.replace(path)
     meta = {
         'trained_at': datetime.now(timezone.utc).isoformat(),
         'features': FEATURES,
@@ -243,6 +247,34 @@ def save_model(booster: lgb.Booster, summary: Dict[str, Any],
 
 def load_model(model_path: str = config.MODEL_PATH) -> lgb.Booster:
     return lgb.Booster(model_file=str(model_path))
+
+
+def retrain(
+    tickers: Optional[List[str]] = None,
+    period: str = config.MODEL_TRAIN_PERIOD,
+    model_path: str = config.MODEL_PATH,
+) -> Tuple[lgb.Booster, Dict[str, Any]]:
+    """Full retrain: fetch -> dataset -> walk-forward eval -> train -> save.
+
+    Used by the CLI and by main.py's monthly schedule. Returns the trained
+    booster and the walk-forward summary.
+    """
+    if tickers is None:
+        tickers = data.get_universe()[: config.MODEL_TRAIN_UNIVERSE_LIMIT]
+    logger.info(f"Retraining on {len(tickers)} tickers, {period} of history...")
+    universe_data = data.fetch_universe_data(tickers, period=period, with_fundamentals=False)
+    if not universe_data:
+        raise RuntimeError("No market data could be fetched for retraining.")
+
+    panel = build_dataset(universe_data)
+    logger.info(f"Dataset: {len(panel)} rows, {panel['ticker'].nunique()} tickers, "
+                f"{panel['date'].nunique()} dates")
+    summary = walk_forward_evaluate(panel)
+    booster = train_final(panel)
+    save_model(booster, summary, model_path=model_path)
+    logger.info(f"Model retrained (mean walk-forward IC {summary['mean_ic']:+.4f} "
+                f"over {summary['folds']} folds) and saved to {model_path}")
+    return booster, summary
 
 
 def score_history(
@@ -365,7 +397,8 @@ def main() -> None:
     parser.add_argument("--sp500", action="store_true", help="Use the live S&P 500 universe")
     parser.add_argument("--limit", type=int, default=100,
                         help="Max tickers when using --sp500 (default 100)")
-    parser.add_argument("--period", default="10y", help="History window (default 10y)")
+    parser.add_argument("--period", default=config.MODEL_TRAIN_PERIOD,
+                        help=f"History window (default {config.MODEL_TRAIN_PERIOD})")
     parser.add_argument("--output", default=config.MODEL_PATH,
                         help=f"Where to save the trained model (default {config.MODEL_PATH})")
     args = parser.parse_args()
@@ -379,25 +412,7 @@ def main() -> None:
     else:
         tickers = list(config.DEFAULT_UNIVERSE)
 
-    logger.info(f"Fetching {args.period} of history for {len(tickers)} tickers...")
-    universe_data = data.fetch_universe_data(
-        tickers, period=args.period, with_fundamentals=False
-    )
-    if not universe_data:
-        raise SystemExit("No market data could be fetched.")
-
-    logger.info("Building dataset...")
-    panel = build_dataset(universe_data)
-    logger.info(f"Dataset: {len(panel)} rows, "
-                f"{panel['ticker'].nunique()} tickers, "
-                f"{panel['date'].nunique()} dates")
-
-    logger.info("Walk-forward evaluation...")
-    summary = walk_forward_evaluate(panel)
-
-    logger.info("Training final model on all data...")
-    booster = train_final(panel)
-    save_model(booster, summary, model_path=args.output)
+    booster, summary = retrain(tickers=tickers, period=args.period, model_path=args.output)
     print_evaluation(summary, booster)
     print(f"Model saved to {args.output} (metadata: {config.MODEL_META_PATH})")
     print("Backtest it with:  python -m stock_picker.backtest --model "

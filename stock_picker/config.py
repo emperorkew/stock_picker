@@ -41,6 +41,9 @@ TRANSACTION_FEE_RATE = 0.001   # 0.1% per trade side
 # ML model (LightGBM cross-sectional return ranker)
 MODEL_PATH = "data/lgbm_model.txt"
 MODEL_META_PATH = "data/lgbm_meta.json"
+MODEL_TRAIN_PERIOD = "10y"
+MODEL_TRAIN_UNIVERSE_LIMIT = 100   # S&P 500 tickers used for training
+RETRAIN_INTERVAL_DAYS = 30         # monthly retrain in the scheduler
 TARGET_HORIZON_DAYS = 20       # predict forward 20-day excess return
 MIN_CROSS_SECTION = 5          # min tickers per date for ranking/IC
 MODEL_BUY_QUANTILE = 0.8       # score above this per-date quantile -> Buy

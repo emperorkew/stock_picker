@@ -46,9 +46,14 @@ ledger is kept forever.
 ## Run
 
 ```bash
-python main.py              # scheduled runs (every 24h)
+python main.py              # scheduled: daily job every 24h, model retrain every 30 days
 python main.py --run-once   # single run
+python main.py --retrain    # retrain the model once and exit
 ```
+
+On startup the scheduler retrains automatically if the model is missing or
+older than 30 days. Note the schedule only fires while `main.py` is running;
+for retrains independent of the app, put `python main.py --retrain` in cron.
 
 ## Backtest
 
