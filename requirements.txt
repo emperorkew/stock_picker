@@ -4,3 +4,5 @@ matplotlib==3.10.9
 supabase==2.31.0
 python-dotenv==1.2.2
 pytest==9.0.3
+yfinance==1.4.1
+schedule==1.2.2
