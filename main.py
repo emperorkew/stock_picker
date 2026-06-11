@@ -4,8 +4,8 @@ from stock_picker import analysis, data, plotting
 
 
 def main() -> None:
-    stocks = data.load_table("stocks")
-    picks = analysis.pick_stocks(stocks)
+    assets = data.load_table("assets")
+    picks = analysis.pick_stocks(assets)
     print(picks)
     if not picks.empty:
         plotting.plot_prices(picks)

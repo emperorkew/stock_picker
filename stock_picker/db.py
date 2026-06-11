@@ -42,11 +42,12 @@ def check_connection(timeout: float = 10.0) -> None:
     without needing a specific table to exist. Raises on failure.
     """
     url, key = _credentials()
-    response = httpx.get(
-        f"{url.rstrip('/')}/rest/v1/",
-        headers={"apikey": key, "Authorization": f"Bearer {key}"},
-        timeout=timeout,
-    )
+    headers = {"apikey": key}
+    if key.startswith("eyJ"):
+        # Legacy JWT keys double as bearer tokens; new sb_* keys must not
+        # be sent as Authorization or the gateway rejects them as bad JWTs.
+        headers["Authorization"] = f"Bearer {key}"
+    response = httpx.get(f"{url.rstrip('/')}/rest/v1/", headers=headers, timeout=timeout)
     response.raise_for_status()
 
 
