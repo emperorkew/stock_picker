@@ -1,0 +1,23 @@
+[Unit]
+Description=Automated Stock Picking & Forecasting Engine
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+# Adjust these paths depending on the exact deployment environment
+WorkingDirectory=/opt/stock_picker
+ExecStart=/opt/stock_picker/.venv/bin/python main.py
+
+# Restart behavior for resilience against network drops/crashes
+Restart=always
+RestartSec=10
+
+# Environment variables
+Environment="PYTHONUNBUFFERED=1"
+Environment="SUPABASE_URL=YOUR_SUPABASE_URL"
+Environment="SUPABASE_KEY=YOUR_SUPABASE_KEY"
+
+[Install]
+WantedBy=multi-user.target
