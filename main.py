@@ -19,8 +19,25 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Pre-defined universe of stocks
-UNIVERSE = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "NVDA", "JPM", "V", "WMT"]
+# Dynamic universe via API
+import pandas as pd
+try:
+    import urllib.request
+    url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    html = urllib.request.urlopen(req).read()
+
+    # Use BeautifulSoup to parse if needed or directly lxml flavor
+    import io
+    # In some headless environments lxml fails silently.
+    # Use basic html5lib or lxml explicit with pandas.
+    dfs = pd.read_html(io.StringIO(html.decode("utf-8")), flavor='html5lib')
+    UNIVERSE = dfs[0]["Symbol"].tolist()
+    # Replace dot with hyphen for Yahoo Finance compatibility (e.g. BRK.B -> BRK-B)
+    UNIVERSE = [sym.replace('.', '-') for sym in UNIVERSE]
+except Exception as e:
+    logger.warning(f"Failed to fetch S&P 500 tickers, falling back to default universe.")
+    UNIVERSE = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "NVDA", "JPM", "V", "WMT"]
 
 def print_dashboard(recommendations, portfolio_summary):
     """Print a structured dashboard to the console."""
@@ -28,13 +45,18 @@ def print_dashboard(recommendations, portfolio_summary):
     print(f"STOCK PICKER DASHBOARD - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("="*80)
 
-    print("\nCURRENT RECOMMENDATIONS:")
+    print("\nCURRENT RECOMMENDATIONS (Showing Top 20):")
     print("-" * 80)
     if not recommendations.empty:
         # Format the dataframe for display
         display_cols = ['Signal', 'Price', 'P/E', 'FCF_Yield', 'RSI', 'MACD']
         # Filter only existing columns just in case
         display_cols = [c for c in display_cols if c in recommendations.columns]
+
+        # Sort so we see Buy/Sell signals first
+        display_df = recommendations.copy()
+        display_df['Signal_Rank'] = display_df['Signal'].map({'Buy': 0, 'Sell': 1, 'Hold': 2})
+        display_df = display_df.sort_values('Signal_Rank').drop(columns=['Signal_Rank']).head(20)
 
         # Format floats
         formatters = {
@@ -45,7 +67,9 @@ def print_dashboard(recommendations, portfolio_summary):
             'MACD': '{:.4f}'.format,
         }
 
-        print(recommendations[display_cols].to_string(formatters=formatters))
+        print(display_df[display_cols].to_string(formatters=formatters))
+        if len(recommendations) > 20:
+            print(f"... and {len(recommendations) - 20} more hold signals.")
     else:
         print("No recommendations available.")
 
@@ -106,8 +130,9 @@ def job():
     logger.info("Starting scheduled stock picker job...")
 
     # 1. Fetch Data
-    logger.info(f"Fetching market data for universe: {UNIVERSE}")
-    universe_data = data.fetch_universe_data(UNIVERSE)
+    # For speed in test run, truncate UNIVERSE to 10-15 if it's very large, but code has the full list.
+    logger.info(f"Fetching market data for universe of {len(UNIVERSE)} stocks...")
+    universe_data = data.fetch_universe_data(UNIVERSE) # This might take a minute, which is fine
 
     if not universe_data:
         logger.error("Failed to fetch any market data. Aborting job.")

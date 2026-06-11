@@ -6,3 +6,5 @@ python-dotenv==1.2.2
 pytest==9.0.3
 yfinance==1.4.1
 schedule==1.2.2
+lxml==6.1.1
+html5lib==1.1
