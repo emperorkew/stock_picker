@@ -45,20 +45,20 @@ def _value(latest: pd.Series, key: str, default: float) -> float:
     return default if pd.isna(value) else float(value)
 
 
-def score_signals(latest: pd.Series, info: Dict[str, Any]) -> Tuple[float, float]:
-    """Score the latest indicator row plus fundamentals; returns (buy_score, sell_score)."""
+def score_signals(
+    latest: pd.Series, info: Dict[str, Any], use_fundamentals: bool = True
+) -> Tuple[float, float]:
+    """Score the latest indicator row plus fundamentals; returns (buy_score, sell_score).
+
+    use_fundamentals=False skips the P/E and FCF rules entirely — used by the
+    backtest, where historical fundamentals aren't known point-in-time.
+    """
     ema_50 = _value(latest, 'EMA_50', 0)
     ema_200 = _value(latest, 'EMA_200', 0)
     rsi = _value(latest, 'RSI', 50)
     macd = _value(latest, 'MACD', 0)
     signal_line = _value(latest, 'Signal_Line', 0)
     volume_anomaly = _value(latest, 'Volume_Anomaly', 1)
-
-    # Fundamentals
-    pe_ratio = info.get('forwardPE') or info.get('trailingPE') or 50  # Default to high if missing
-    fcf = info.get('freeCashflow')
-    market_cap = info.get('marketCap')
-    fcf_yield = (fcf / market_cap) if fcf and market_cap else 0
 
     buy_score = 0.0
     sell_score = 0.0
@@ -84,18 +84,33 @@ def score_signals(latest: pd.Series, info: Dict[str, Any]) -> Tuple[float, float
     elif volume_anomaly < config.VOLUME_DRY:
         sell_score += 0.5  # Drying up
 
-    # Fundamental Rules. Negative P/E means negative earnings, not "cheap".
-    if 0 < pe_ratio < config.PE_CHEAP:
-        buy_score += 1
-    elif pe_ratio > config.PE_EXPENSIVE:
-        sell_score += 1
+    if use_fundamentals:
+        # Negative P/E means negative earnings, not "cheap".
+        pe_ratio = info.get('forwardPE') or info.get('trailingPE') or 50  # Default to high if missing
+        fcf = info.get('freeCashflow')
+        market_cap = info.get('marketCap')
+        fcf_yield = (fcf / market_cap) if fcf and market_cap else 0
 
-    if fcf_yield > config.FCF_YIELD_GOOD:
-        buy_score += 1
-    elif fcf_yield < 0:
-        sell_score += 1
+        if 0 < pe_ratio < config.PE_CHEAP:
+            buy_score += 1
+        elif pe_ratio > config.PE_EXPENSIVE:
+            sell_score += 1
+
+        if fcf_yield > config.FCF_YIELD_GOOD:
+            buy_score += 1
+        elif fcf_yield < 0:
+            sell_score += 1
 
     return buy_score, sell_score
+
+
+def signal_from_scores(buy_score: float, sell_score: float) -> str:
+    """Map (buy_score, sell_score) to a 'Buy'/'Hold'/'Sell' decision."""
+    if buy_score >= config.BUY_SCORE_THRESHOLD and buy_score > sell_score + 1:
+        return 'Buy'
+    if sell_score >= config.SELL_SCORE_THRESHOLD and sell_score > buy_score + 1:
+        return 'Sell'
+    return 'Hold'
 
 
 def generate_signals(hist: pd.DataFrame, info: Dict[str, Any]) -> str:
@@ -106,15 +121,8 @@ def generate_signals(hist: pd.DataFrame, info: Dict[str, Any]) -> str:
     if hist.empty or len(hist) < 200:
         return 'Hold'
 
-    latest = hist.iloc[-1]
-    buy_score, sell_score = score_signals(latest, info)
-
-    if buy_score >= config.BUY_SCORE_THRESHOLD and buy_score > sell_score + 1:
-        return 'Buy'
-    elif sell_score >= config.SELL_SCORE_THRESHOLD and sell_score > buy_score + 1:
-        return 'Sell'
-    else:
-        return 'Hold'
+    buy_score, sell_score = score_signals(hist.iloc[-1], info)
+    return signal_from_scores(buy_score, sell_score)
 
 
 def pick_stocks(universe_data: Dict[str, Any]) -> pd.DataFrame:

@@ -31,3 +31,8 @@ INVESTMENT_PER_TRADE = 1_000.0
 
 # Scheduling
 DEFAULT_INTERVAL_HOURS = 24
+
+# Backtesting
+BACKTEST_PERIOD = "5y"
+WARMUP_BARS = 200              # bars of history required before signals count
+TRANSACTION_FEE_RATE = 0.001   # 0.1% per trade side
