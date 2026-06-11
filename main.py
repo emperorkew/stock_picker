@@ -5,6 +5,7 @@ import logging
 import sys
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pandas as pd
 import schedule
@@ -26,25 +27,35 @@ def _fmt(spec: str):
     return lambda value: spec.format(value) if pd.notna(value) else '—'
 
 
-def print_dashboard(recommendations, portfolio_summary, cash=None, realized_pnl=None):
+def print_dashboard(recommendations, portfolio_summary, cash=None, realized_pnl=None,
+                    signal_source='rules'):
     """Print a structured dashboard to the console."""
     print("\n" + "=" * 80)
     now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
-    print(f"STOCK PICKER DASHBOARD - {now}")
+    print(f"STOCK PICKER DASHBOARD - {now}  [signals: {signal_source}]")
     print("=" * 80)
 
     print("\nCURRENT RECOMMENDATIONS (Showing Top 20):")
     print("-" * 80)
     if not recommendations.empty:
-        display_cols = ['Signal', 'Price', 'P/E', 'FCF_Yield', 'RSI', 'MACD']
+        display_cols = ['Signal', 'Score', 'Price', 'P/E', 'FCF_Yield', 'RSI', 'MACD']
         display_cols = [c for c in display_cols if c in recommendations.columns]
 
-        # Sort so we see Buy/Sell signals first
+        # Buy/Sell first; within each signal class, best model score first.
         display_df = recommendations.copy()
         display_df['Signal_Rank'] = display_df['Signal'].map({'Buy': 0, 'Sell': 1, 'Hold': 2})
-        display_df = display_df.sort_values('Signal_Rank').drop(columns=['Signal_Rank']).head(20)
+        sort_cols, ascending = ['Signal_Rank'], [True]
+        if 'Score' in display_df.columns:
+            sort_cols.append('Score')
+            ascending.append(False)
+        display_df = (
+            display_df.sort_values(sort_cols, ascending=ascending)
+            .drop(columns=['Signal_Rank'])
+            .head(20)
+        )
 
         formatters = {
+            'Score': _fmt('{:+.4f}'),
             'Price': _fmt('{:.2f}'),
             'P/E': _fmt('{:.2f}'),
             'FCF_Yield': _fmt('{:.4f}'),
@@ -115,6 +126,42 @@ def print_dashboard(recommendations, portfolio_summary, cash=None, realized_pnl=
     print("=" * 80 + "\n")
 
 
+def _load_model_or_none():
+    """The trained LightGBM model, or None to fall back to the rule scorecard."""
+    if not Path(config.MODEL_PATH).exists():
+        logger.warning(
+            f"No trained model at {config.MODEL_PATH} — falling back to rule-based "
+            "signals. Train one with: python -m stock_picker.model --sp500 --limit 100"
+        )
+        return None
+    from stock_picker import model as ml  # lazy: lightgbm import is slow
+    return ml.load_model(config.MODEL_PATH)
+
+
+def _apply_model_signals(recommendations, universe_data, booster):
+    """Replace the rule-based Signal column with model rankings.
+
+    Adds Score (raw prediction) and Confidence (rank percentile); tickers the
+    model can't score (not enough history) stay 'Hold'. Returns the signal
+    source actually used.
+    """
+    from stock_picker import model as ml
+
+    model_signals = ml.latest_signals(booster, universe_data)
+    if model_signals.empty:
+        logger.warning(
+            "Model produced no scores (cross-section too small or history too "
+            "short) — using rule-based signals."
+        )
+        return recommendations, 'rules'
+
+    recommendations = recommendations.join(model_signals[['Score', 'Confidence']])
+    recommendations['Signal'] = 'Hold'
+    common = recommendations.index.intersection(model_signals.index)
+    recommendations.loc[common, 'Signal'] = model_signals.loc[common, 'Signal']
+    return recommendations, 'lgbm-model'
+
+
 def job():
     """Main automated job to fetch data, analyze, log, and print dashboard."""
     logger.info("Starting stock picker job...")
@@ -130,13 +177,24 @@ def job():
     logger.info("Analyzing data and generating signals...")
     recommendations = analysis.pick_stocks(universe_data)
 
+    signal_source = 'rules'
+    booster = _load_model_or_none()
+    if booster is not None:
+        recommendations, signal_source = _apply_model_signals(
+            recommendations, universe_data, booster
+        )
+    logger.info(f"Signal source: {signal_source} "
+                f"({(recommendations['Signal'] == 'Buy').sum()} buys, "
+                f"{(recommendations['Signal'] == 'Sell').sum()} sells, "
+                f"{(recommendations['Signal'] == 'Hold').sum()} holds)")
+
     portfolio_summary = pd.DataFrame(columns=['ticker', 'shares_owned', 'avg_price'])
     cash = realized_pnl = None
     try:
         logger.info("Logging signals and executing simulated trades in Supabase...")
         run_time = datetime.now(timezone.utc)
         ledger = Ledger()
-        ledger.log_signals(recommendations, run_time)
+        ledger.log_signals(recommendations, run_time, rationale=signal_source)
         ledger.log_snapshots(recommendations, run_time)
         ledger.execute_trades(recommendations, run_time)
 
@@ -145,7 +203,7 @@ def job():
     except Exception:
         logger.exception("Failed to persist results to Supabase; showing recommendations only")
 
-    print_dashboard(recommendations, portfolio_summary, cash, realized_pnl)
+    print_dashboard(recommendations, portfolio_summary, cash, realized_pnl, signal_source)
     logger.info("Job completed.")
 
 

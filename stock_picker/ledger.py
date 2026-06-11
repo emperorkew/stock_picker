@@ -113,15 +113,30 @@ class Ledger:
 
         return ids
 
-    def log_signals(self, df: pd.DataFrame, timestamp: Optional[datetime] = None) -> None:
-        """Log the generated signals into trading_signals."""
+    def log_signals(
+        self,
+        df: pd.DataFrame,
+        timestamp: Optional[datetime] = None,
+        rationale: Optional[str] = None,
+    ) -> None:
+        """Log the generated signals into trading_signals.
+
+        If df has a Confidence column (model rank percentile, 0..1) it is
+        stored as confidence_score; rationale records the signal source.
+        """
         if df.empty:
             return
         ts = self._timestamp(timestamp)
         ids = self._asset_ids(df)
 
         rows = [
-            {'asset_id': ids[ticker], 'timestamp': ts, 'signal': SIGNAL_ENUM[row['Signal']]}
+            {
+                'asset_id': ids[ticker],
+                'timestamp': ts,
+                'signal': SIGNAL_ENUM[row['Signal']],
+                'confidence_score': _clean(row.get('Confidence'), 2, 1.0),
+                'rationale': rationale,
+            }
             for ticker, row in df.iterrows()
             if ticker in ids and row['Signal'] in SIGNAL_ENUM
         ]

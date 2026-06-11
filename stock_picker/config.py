@@ -7,8 +7,9 @@ DEFAULT_UNIVERSE = [
     "TSLA", "NVDA", "JPM", "V", "WMT",
 ]
 
-# Data fetching
-HISTORY_PERIOD = "1y"
+# Data fetching. The model's features look back up to 252 bars, so the live
+# window must be comfortably longer than a year.
+HISTORY_PERIOD = "2y"
 FETCH_RETRIES = 3
 FETCH_BACKOFF_FACTOR = 0.5
 FUNDAMENTALS_CACHE_PATH = "data/fundamentals_cache.json"

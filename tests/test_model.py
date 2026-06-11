@@ -9,6 +9,7 @@ from stock_picker.model import (
     FEATURES,
     build_dataset,
     build_features,
+    latest_signals,
     make_signal_fn,
     train_final,
     walk_forward_evaluate,
@@ -104,3 +105,25 @@ def test_make_signal_fn_ranks_extremes():
     assert signal_fn({'_ticker': 'T0', '_date': last_date}, {}) == 'Sell'
     # Unknown (ticker, date) combinations fall back to Hold.
     assert signal_fn({'_ticker': 'NOPE', '_date': last_date}, {}) == 'Hold'
+
+
+def test_latest_signals_live_ranking():
+    universe = _synthetic_universe()
+    panel = build_dataset(universe)
+    booster = train_final(panel, params=TEST_PARAMS, num_rounds=60)
+
+    signals = latest_signals(booster, universe)
+    assert set(signals.columns) == {'Score', 'Confidence', 'Signal'}
+    assert len(signals) == len(universe)
+    assert signals['Confidence'].between(0, 1).all()
+    # Highest drift ranks top -> Buy; lowest ranks bottom -> Sell.
+    n = len(universe) - 1
+    assert signals.loc[f'T{n}', 'Signal'] == 'Buy'
+    assert signals.loc['T0', 'Signal'] == 'Sell'
+
+
+def test_latest_signals_small_cross_section_is_empty():
+    universe = _synthetic_universe(n_tickers=2)
+    panel_universe = _synthetic_universe()  # train on a full universe
+    booster = train_final(build_dataset(panel_universe), params=TEST_PARAMS, num_rounds=60)
+    assert latest_signals(booster, universe).empty

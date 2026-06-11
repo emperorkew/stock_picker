@@ -280,6 +280,30 @@ def predict_latest(
     return latest.set_index('ticker')['score'].sort_values(ascending=False)
 
 
+def latest_signals(
+    booster: lgb.Booster,
+    universe_data: Dict[str, Tuple[pd.DataFrame, Dict[str, Any]]],
+    buy_quantile: float = config.MODEL_BUY_QUANTILE,
+    sell_quantile: float = config.MODEL_SELL_QUANTILE,
+) -> pd.DataFrame:
+    """Live signals from each ticker's latest bar.
+
+    Returns a DataFrame indexed by ticker with Score (raw model output),
+    Confidence (cross-sectional rank percentile, 0..1), and Signal
+    ('Buy' for the top quantile, 'Sell' for the bottom, else 'Hold').
+    Empty if the cross-section is too small to rank.
+    """
+    scores = predict_latest(booster, universe_data)
+    if len(scores) < config.MIN_CROSS_SECTION:
+        return pd.DataFrame(columns=['Score', 'Confidence', 'Signal'])
+
+    rank = scores.rank(pct=True)
+    signal = pd.Series('Hold', index=scores.index)
+    signal[rank >= buy_quantile] = 'Buy'
+    signal[rank <= sell_quantile] = 'Sell'
+    return pd.DataFrame({'Score': scores, 'Confidence': rank, 'Signal': signal})
+
+
 def make_signal_fn(
     booster: lgb.Booster,
     universe_data: Dict[str, Tuple[pd.DataFrame, Dict[str, Any]]],
