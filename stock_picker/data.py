@@ -145,13 +145,17 @@ def fetch_market_data(
 
 
 def fetch_universe_data(
-    tickers: List[str], period: str = config.HISTORY_PERIOD
+    tickers: List[str],
+    period: str = config.HISTORY_PERIOD,
+    with_fundamentals: bool = True,
 ) -> Dict[str, Tuple[pd.DataFrame, Dict[str, Any]]]:
     """
     Fetch market data for a universe of stocks.
 
     Prices come from a single batched download; fundamentals are fetched per
-    ticker but cached on disk for FUNDAMENTALS_MAX_AGE_DAYS.
+    ticker but cached on disk for FUNDAMENTALS_MAX_AGE_DAYS. Pass
+    with_fundamentals=False to skip the slow per-ticker info calls when only
+    price history is needed (e.g. model training).
     """
     if not tickers:
         return {}
@@ -175,8 +179,9 @@ def fetch_universe_data(
             continue
         hist = hist.ffill()  # forward-fill only; never fill from future bars
 
-        info = _get_fundamentals(ticker, cache)
+        info = _get_fundamentals(ticker, cache) if with_fundamentals else {}
         results[ticker] = (hist, info)
 
-    _save_fundamentals_cache(cache)
+    if with_fundamentals:
+        _save_fundamentals_cache(cache)
     return results

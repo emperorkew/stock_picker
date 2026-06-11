@@ -73,9 +73,12 @@ def _prepare(universe_data, use_fundamentals):
         if hist is None or len(hist) < config.WARMUP_BARS + 2:
             continue
         df = analysis.calculate_indicators(hist)
-        # Forward returns are for *evaluation* only; the signal function
-        # never reads them.
+        # _fwd_* are for *evaluation* only — the rule-based signal functions
+        # never read them. _ticker/_date let cross-sectional strategies
+        # (e.g. the ML model) look up per-date rankings.
         df = df.assign(
+            _ticker=ticker,
+            _date=df.index,
             _fwd_5d=df['Close'].shift(-5) / df['Close'] - 1,
             _fwd_20d=df['Close'].shift(-20) / df['Close'] - 1,
         )
@@ -299,6 +302,9 @@ def main() -> None:
                              "(look-ahead bias; sensitivity check only)")
     parser.add_argument("--cash", type=float, default=config.STARTING_CASH)
     parser.add_argument("--fee", type=float, default=config.TRANSACTION_FEE_RATE)
+    parser.add_argument("--model", metavar="PATH",
+                        help="Trade a trained LightGBM model (see stock_picker.model) "
+                             "instead of the rule-based signals")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -319,11 +325,19 @@ def main() -> None:
     if not universe_data:
         raise SystemExit("No market data could be fetched.")
 
+    signal_fn = None
+    if args.model:
+        from stock_picker import model as ml  # lazy: lightgbm import is slow
+
+        logger.info(f"Scoring universe with model {args.model}...")
+        signal_fn = ml.make_signal_fn(ml.load_model(args.model), universe_data)
+
     result = run_backtest(
         universe_data,
         starting_cash=args.cash,
         fee_rate=args.fee,
         use_fundamentals=args.fundamentals == "static",
+        signal_fn=signal_fn,
     )
     print_report(result)
 

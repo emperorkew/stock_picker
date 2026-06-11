@@ -11,6 +11,8 @@ stock_picker/           The application package
     db.py               Supabase client setup (+ connection check)
     data.py             S&P 500 universe, batched price downloads, cached fundamentals
     analysis.py         Indicators (EMA/RSI/MACD/volume) and signal scoring
+    model.py            LightGBM cross-sectional return model (train/evaluate/score)
+    backtest.py         Walk-forward backtest harness
     ledger.py           Supabase-backed ledger: signals, snapshots, simulated trades
     plotting.py         Matplotlib charts
 tests/                  Pytest tests
@@ -44,7 +46,32 @@ ledger is kept forever.
 ## Run
 
 ```bash
-python main.py
+python main.py              # scheduled runs (every 24h)
+python main.py --run-once   # single run
+```
+
+## Backtest
+
+Replays the live signal rules over history with next-day-open fills and
+transaction costs, and compares against an equal-weight buy-and-hold
+benchmark:
+
+```bash
+python -m stock_picker.backtest                      # default universe, 5y
+python -m stock_picker.backtest --sp500 --limit 50   # wider universe
+python -m stock_picker.backtest --tickers AAPL MSFT --period 10y
+```
+
+## ML model
+
+Trains a LightGBM model that ranks stocks by predicted forward 20-day
+return relative to the universe median. Evaluation is walk-forward with an
+embargo gap (the honest numbers — mean rank IC, hit rate, decile spread);
+the final model is saved to `data/lgbm_model.txt`:
+
+```bash
+python -m stock_picker.model --sp500 --limit 100 --period 10y
+python -m stock_picker.backtest --model data/lgbm_model.txt   # in-sample demo
 ```
 
 ## Tests
